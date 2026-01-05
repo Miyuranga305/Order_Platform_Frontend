@@ -1,29 +1,124 @@
 import { useEffect, useState } from "react";
 import client from "../../api/client";
-import { 
-  FaBell, 
-  FaCheckCircle, 
-  FaExclamationTriangle, 
-  FaInfoCircle, 
+import {
+  FaBell,
+  FaCheckCircle,
+  FaExclamationTriangle,
+  FaInfoCircle,
   FaShoppingCart,
   FaUserPlus,
   FaFilter,
-  FaEye,
   FaClock,
   FaCalendarAlt,
   FaTrash,
   FaCheck,
-  FaTimes,
-  FaArrowRight
+  FaArrowRight,
 } from "react-icons/fa";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast, ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 
+/* ===================== FIX HELPERS (LOGIC ONLY) ===================== */
+const normalize = (v) => (v || "").toString().trim().toUpperCase();
+
+// backend -> UI type (DO NOT change UI labels)
+const backendToUiType = (eventType) => {
+  const t = normalize(eventType);
+  if (t === "ORDER_CREATED") return "order_created";
+  if (t === "ORDER_STATUS_CHANGED") return "order_updated";
+  if (t === "USER_REGISTERED") return "user_registered";
+  if (t === "PAYMENT_RECEIVED") return "payment_received";
+  return "other";
+};
+
+// UI filter -> backend enum(s)
+const uiToBackendTypes = (uiType) => {
+  switch ((uiType || "").toLowerCase()) {
+    case "order_created":
+      return ["ORDER_CREATED"];
+    case "order_updated":
+      return ["ORDER_STATUS_CHANGED"];
+    case "user_registered":
+      return ["USER_REGISTERED"];
+    case "payment_received":
+      return ["PAYMENT_RECEIVED"];
+    default:
+      return [];
+  }
+};
+
+const safeJsonPretty = (payload) => {
+  try {
+    if (!payload) return "{}";
+    const obj = typeof payload === "string" ? JSON.parse(payload) : payload;
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return String(payload);
+  }
+};
+
+const getNotificationIcon = (eventType) => {
+  const uiType = backendToUiType(eventType);
+  switch (uiType) {
+    case "order_created":
+      return <FaShoppingCart className="text-green-500" />;
+    case "order_updated":
+      return <FaExclamationTriangle className="text-yellow-500" />;
+    case "user_registered":
+      return <FaUserPlus className="text-blue-500" />;
+    case "payment_received":
+      return <FaCheckCircle className="text-green-500" />;
+    default:
+      return <FaInfoCircle className="text-gray-500" />;
+  }
+};
+
+const getNotificationColor = (eventType) => {
+  const uiType = backendToUiType(eventType);
+  switch (uiType) {
+    case "order_created":
+      return "border-l-green-500 bg-green-50";
+    case "order_updated":
+      return "border-l-yellow-500 bg-yellow-50";
+    case "user_registered":
+      return "border-l-blue-500 bg-blue-50";
+    case "payment_received":
+      return "border-l-purple-500 bg-purple-50";
+    default:
+      return "border-l-gray-500 bg-gray-50";
+  }
+};
+
+const formatRelativeDate = (dateString) => {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  return date.toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+  });
+};
+
+const titleFromEventType = (eventType) =>
+  backendToUiType(eventType)
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (l) => l.toUpperCase());
+
+/* ===================== COMPONENT ===================== */
+
 export default function AdminNotifications() {
-  const [data, setData] = useState(null);
+  const [data, setData] = useState({ content: [] });
   const [filteredNotifications, setFilteredNotifications] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+
   const [filter, setFilter] = useState("all");
   const [searchTerm, setSearchTerm] = useState("");
   const [unreadCount, setUnreadCount] = useState(0);
@@ -34,56 +129,55 @@ export default function AdminNotifications() {
 
   useEffect(() => {
     if (data?.content) {
-      filterNotifications();
-      countUnread();
+      applyFilters();
+      // ✅ unread count should be based on ALL notifications (like your screenshot)
+      setUnreadCount((data.content || []).filter((n) => !n.read).length);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, filter, searchTerm]);
 
   const fetchNotifications = async () => {
     setIsLoading(true);
     try {
       const res = await client.get("/api/admin/notifications");
-      setData(res.data);
+      setData(res.data || { content: [] });
     } catch (error) {
       toast.error("Failed to load notifications");
+      setData({ content: [] });
     } finally {
       setIsLoading(false);
     }
   };
 
-  const filterNotifications = () => {
-    let filtered = [...(data?.content || [])];
+  const applyFilters = () => {
+    let list = [...(data?.content || [])];
 
-    // Filter by type
+    // ✅ Type filter
     if (filter !== "all") {
-      filtered = filtered.filter(n => n.eventType === filter);
+      const allowed = uiToBackendTypes(filter);
+      list = list.filter((n) => allowed.includes(normalize(n.eventType)));
     }
 
-    // Search filter
-    if (searchTerm) {
-      filtered = filtered.filter(n => 
-        n.eventType?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        n.orderId?.toString().includes(searchTerm) ||
-        n.payload?.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+    // ✅ Search
+    if (searchTerm.trim()) {
+      const t = searchTerm.trim().toLowerCase();
+      list = list.filter((n) => {
+        const eventType = (n.eventType || "").toLowerCase();
+        const orderId = (n.orderId || "").toString().toLowerCase();
+        const payload = (n.payload || "").toString().toLowerCase();
+        return eventType.includes(t) || orderId.includes(t) || payload.includes(t);
+      });
     }
 
-    setFilteredNotifications(filtered);
-  };
-
-  const countUnread = () => {
-    const count = data.content.filter(n => !n.read).length;
-    setUnreadCount(count);
+    setFilteredNotifications(list);
   };
 
   const markAsRead = async (id) => {
     try {
       await client.put(`/api/admin/notifications/${id}/read`);
-      setData(prev => ({
+      setData((prev) => ({
         ...prev,
-        content: prev.content.map(n => 
-          n.id === id ? { ...n, read: true } : n
-        )
+        content: prev.content.map((n) => (n.id === id ? { ...n, read: true } : n)),
       }));
       toast.success("Notification marked as read");
     } catch (error) {
@@ -94,9 +188,9 @@ export default function AdminNotifications() {
   const markAllAsRead = async () => {
     try {
       await client.put("/api/admin/notifications/read-all");
-      setData(prev => ({
+      setData((prev) => ({
         ...prev,
-        content: prev.content.map(n => ({ ...n, read: true }))
+        content: prev.content.map((n) => ({ ...n, read: true })),
       }));
       toast.success("All notifications marked as read");
     } catch (error) {
@@ -107,9 +201,9 @@ export default function AdminNotifications() {
   const deleteNotification = async (id) => {
     try {
       await client.delete(`/api/admin/notifications/${id}`);
-      setData(prev => ({
+      setData((prev) => ({
         ...prev,
-        content: prev.content.filter(n => n.id !== id)
+        content: prev.content.filter((n) => n.id !== id),
       }));
       toast.success("Notification deleted");
     } catch (error) {
@@ -117,53 +211,19 @@ export default function AdminNotifications() {
     }
   };
 
-  const getNotificationIcon = (type) => {
-    switch (type?.toLowerCase()) {
-      case 'order_created':
-        return <FaShoppingCart className="text-green-500" />;
-      case 'order_updated':
-        return <FaExclamationTriangle className="text-yellow-500" />;
-      case 'user_registered':
-        return <FaUserPlus className="text-blue-500" />;
-      case 'payment_received':
-        return <FaCheckCircle className="text-green-500" />;
-      default:
-        return <FaInfoCircle className="text-gray-500" />;
-    }
-  };
+  const total = data.content.length;
 
-  const getNotificationColor = (type) => {
-    switch (type?.toLowerCase()) {
-      case 'order_created':
-        return 'border-l-green-500 bg-green-50';
-      case 'order_updated':
-        return 'border-l-yellow-500 bg-yellow-50';
-      case 'user_registered':
-        return 'border-l-blue-500 bg-blue-50';
-      case 'payment_received':
-        return 'border-l-purple-500 bg-purple-50';
-      default:
-        return 'border-l-gray-500 bg-gray-50';
-    }
-  };
+  const todayCount = data.content.filter((n) => {
+    const d = new Date(n.createdAt);
+    const today = new Date();
+    return d.toDateString() === today.toDateString();
+  }).length;
 
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffHours < 24) return `${diffHours}h ago`;
-    if (diffDays < 7) return `${diffDays}d ago`;
-    
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric'
-    });
-  };
+  const last7DaysCount = data.content.filter((n) => {
+    const d = new Date(n.createdAt);
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    return d > weekAgo;
+  }).length;
 
   if (isLoading) {
     return (
@@ -172,7 +232,7 @@ export default function AdminNotifications() {
           <div className="animate-pulse space-y-4">
             <div className="h-8 bg-gray-200 rounded w-1/4"></div>
             <div className="h-12 bg-gray-200 rounded"></div>
-            {[1, 2, 3].map(i => (
+            {[1, 2, 3].map((i) => (
               <div key={i} className="h-32 bg-gray-200 rounded"></div>
             ))}
           </div>
@@ -184,14 +244,10 @@ export default function AdminNotifications() {
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white pt-20 pb-10 px-4">
       <ToastContainer position="top-right" autoClose={3000} />
-      
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8"
-        >
+
+        {/* Header (same style as your screenshot) */}
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-3">
               <div className="relative">
@@ -206,12 +262,10 @@ export default function AdminNotifications() {
               </div>
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">Notifications</h1>
-                <p className="text-gray-600 mt-1">
-                  Stay updated with system activities and events
-                </p>
+                <p className="text-gray-600 mt-1">Stay updated with system activities and events</p>
               </div>
             </div>
-            
+
             <div className="flex gap-3">
               <button
                 onClick={markAllAsRead}
@@ -230,18 +284,18 @@ export default function AdminNotifications() {
             </div>
           </div>
 
-          {/* Stats & Filters */}
+          {/* Stats cards (same as screenshot) */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
             <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600">Total</p>
-                  <p className="text-2xl font-bold text-gray-900">{data.content.length}</p>
+                  <p className="text-2xl font-bold text-gray-900">{total}</p>
                 </div>
                 <FaBell className="text-2xl text-gray-400" />
               </div>
             </div>
-            
+
             <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
@@ -253,41 +307,29 @@ export default function AdminNotifications() {
                 </div>
               </div>
             </div>
-            
+
             <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600">Today</p>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {data.content.filter(n => {
-                      const date = new Date(n.createdAt);
-                      const today = new Date();
-                      return date.toDateString() === today.toDateString();
-                    }).length}
-                  </p>
+                  <p className="text-2xl font-bold text-gray-900">{todayCount}</p>
                 </div>
                 <FaCalendarAlt className="text-2xl text-gray-400" />
               </div>
             </div>
-            
+
             <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm text-gray-600">Last 7 Days</p>
-                  <p className="text-2xl font-bold text-gray-900">
-                    {data.content.filter(n => {
-                      const date = new Date(n.createdAt);
-                      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-                      return date > weekAgo;
-                    }).length}
-                  </p>
+                  <p className="text-2xl font-bold text-gray-900">{last7DaysCount}</p>
                 </div>
                 <FaClock className="text-2xl text-gray-400" />
               </div>
             </div>
           </div>
 
-          {/* Filters */}
+          {/* Search + filter buttons (same as screenshot) */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 mb-6">
             <div className="flex flex-col md:flex-row gap-4">
               <div className="flex-1">
@@ -302,19 +344,17 @@ export default function AdminNotifications() {
                   />
                 </div>
               </div>
-              
-              <div className="flex gap-3">
-                {['all', 'order_created', 'order_updated', 'user_registered', 'payment_received'].map(type => (
+
+              <div className="flex gap-3 flex-wrap">
+                {["all", "order_created", "order_updated", "user_registered", "payment_received"].map((type) => (
                   <button
                     key={type}
                     onClick={() => setFilter(type)}
                     className={`px-4 py-2 rounded-lg font-medium transition-colors duration-200 ${
-                      filter === type
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      filter === type ? "bg-purple-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
                     }`}
                   >
-                    {type.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}
+                    {type.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase())}
                   </button>
                 ))}
               </div>
@@ -322,87 +362,86 @@ export default function AdminNotifications() {
           </div>
         </motion.div>
 
-        {/* Notifications List */}
+        {/* Notifications List (same as screenshot) */}
         <AnimatePresence>
           {filteredNotifications.length === 0 ? (
             <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
-              className="text-center py-12 bg-white rounded-2xl shadow-sm border border-gray-200"
+              className="text-center py-12 bg-white rounded-2xl shadow-sm border border-gray-
+              -200"
             >
               <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full mb-6">
                 <FaBell className="w-8 h-8 text-gray-400" />
               </div>
               <h3 className="text-xl font-semibold text-gray-900 mb-2">No notifications found</h3>
               <p className="text-gray-600 max-w-md mx-auto mb-6">
-                {searchTerm || filter !== 'all' 
-                  ? "No notifications match your current filters"
-                  : "All caught up! No notifications to show"}
+                {searchTerm || filter !== "all" ? "No notifications match your current filters" : "All caught up! No notifications to show"}
               </p>
             </motion.div>
           ) : (
-            <motion.div
-              layout
-              className="space-y-4"
-            >
-              {filteredNotifications.map((notification, index) => (
+            <motion.div layout className="space-y-4">
+              {filteredNotifications.map((n, index) => (
                 <motion.div
-                  key={notification.id}
+                  key={n.id}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.3, delay: index * 0.05 }}
                   layout
                 >
-                  <div className={`bg-white rounded-xl border-l-4 ${getNotificationColor(notification.eventType)} ${notification.read ? 'opacity-75' : ''} shadow-sm border border-gray-200`}>
+                  <div
+                    className={`bg-white rounded-xl border-l-4 ${getNotificationColor(n.eventType)} ${
+                      n.read ? "opacity-75" : ""
+                    } shadow-sm border border-gray-200`}
+                  >
                     <div className="p-6">
                       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
                         <div className="flex-1">
                           <div className="flex items-start gap-4">
                             <div className="p-3 bg-white rounded-lg shadow-sm border border-gray-100">
-                              {getNotificationIcon(notification.eventType)}
+                              {getNotificationIcon(n.eventType)}
                             </div>
-                            
+
                             <div className="flex-1">
                               <div className="flex flex-wrap items-center gap-3 mb-2">
-                                <h3 className="text-lg font-semibold text-gray-900">
-                                  {notification.eventType.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}
-                                </h3>
-                                {!notification.read && (
+                                <h3 className="text-lg font-semibold text-gray-900">{titleFromEventType(n.eventType)}</h3>
+
+                                {!n.read && (
                                   <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
                                     New
                                   </span>
                                 )}
-                                <span className="text-sm text-gray-500">
-                                  {formatDate(notification.createdAt)}
-                                </span>
+
+                                <span className="text-sm text-gray-500">{formatRelativeDate(n.createdAt)}</span>
                               </div>
-                              
+
                               <div className="flex items-center gap-3 mb-4">
-                                {notification.orderId && (
+                                {n.orderId && (
                                   <span className="inline-flex items-center gap-1 px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-medium">
                                     <FaShoppingCart className="text-xs" />
-                                    Order #{notification.orderId}
+                                    Order #{n.orderId}
                                   </span>
                                 )}
                               </div>
-                              
+
                               <div className="bg-gray-50 rounded-lg p-4 mb-4">
                                 <div className="flex items-center justify-between mb-2">
                                   <span className="text-sm font-medium text-gray-700">Event Data</span>
                                   <span className="text-xs text-gray-500">JSON Payload</span>
                                 </div>
+
                                 <pre className="text-sm text-gray-600 overflow-x-auto whitespace-pre-wrap bg-white p-3 rounded border border-gray-200">
-                                  {JSON.stringify(JSON.parse(notification.payload || '{}'), null, 2)}
+                                  {safeJsonPretty(n.payload)}
                                 </pre>
                               </div>
                             </div>
                           </div>
                         </div>
-                        
+
                         <div className="flex items-center gap-2">
-                          {!notification.read && (
+                          {!n.read && (
                             <button
-                              onClick={() => markAsRead(notification.id)}
+                              onClick={() => markAsRead(n.id)}
                               className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors duration-200"
                               title="Mark as read"
                             >
@@ -410,15 +449,15 @@ export default function AdminNotifications() {
                             </button>
                           )}
                           <button
-                            onClick={() => deleteNotification(notification.id)}
+                            onClick={() => deleteNotification(n.id)}
                             className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors duration-200"
                             title="Delete"
                           >
                             <FaTrash />
                           </button>
-                          {notification.orderId && (
+                          {n.orderId && (
                             <a
-                              href={`/orders/${notification.orderId}`}
+                              href={`/orders/${n.orderId}`}
                               className="p-2 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors duration-200"
                               title="View Order"
                             >
